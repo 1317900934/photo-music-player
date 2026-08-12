@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 import file_assoc
 from bundle import Bundle, BundleError, extract_bundle
 from creator_window import CreatorWindow
+from editor_window import EditorWindow
 from dark_messagebox import show_information, show_warning, show_critical, show_question
 from player_window import PlayerWindow
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
@@ -218,6 +219,7 @@ class MainWindow(QMainWindow):
         fit_to_screen(self, 900, 760, 680, 580)
         self.setAcceptDrops(True)
         self.creator = None
+        self.editor = None
         self.player = None
 
         _, _, inner = apply_frameless(self, "音乐相册", icon=APP_ICON)
@@ -246,6 +248,10 @@ class MainWindow(QMainWindow):
         create_btn = _AlignedButton("＋", "创建音乐相册", "primary")
         create_btn.clicked.connect(self._open_creator)
         root.addWidget(create_btn)
+
+        edit_btn = _AlignedButton("✎", "编辑音乐相册")
+        edit_btn.clicked.connect(self._open_editor)
+        root.addWidget(edit_btn)
 
         open_btn = _AlignedButton("▶", "打开音乐相册")
         open_btn.clicked.connect(self._open_file)
@@ -289,6 +295,22 @@ class MainWindow(QMainWindow):
             self.creator.saved.connect(self._play_bundle_path)
         self.creator.show()
         self.creator.raise_()
+
+    def _open_editor(self):
+        # 打开 .pmb 文件进行编辑
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择要编辑的 .pmb 文件", "", "音乐相册 (*.pmb)"
+        )
+        if not path:
+            return
+        
+        if self.editor is None:
+            self.editor = EditorWindow(self)
+            self.editor.saved.connect(self._play_bundle_path)
+        
+        if self.editor.load_bundle(path):
+            self.editor.show()
+            self.editor.raise_()
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(

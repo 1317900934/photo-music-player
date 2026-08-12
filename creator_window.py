@@ -70,6 +70,7 @@ class CreatorWindow(QMainWindow):
 
         self.image_list = QListWidget()
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.image_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.image_list.setStyleSheet("""
             QListWidget {
                 min-width: 400px;
@@ -79,6 +80,10 @@ class CreatorWindow(QMainWindow):
             QListWidget::item {
                 height: 24px;
                 padding: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(91, 124, 250, 0.35);
+                color: #e6e8ee;
             }
         """)
         self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -103,6 +108,7 @@ class CreatorWindow(QMainWindow):
 
         self.music_list = QListWidget()
         self.music_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.music_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.music_list.setStyleSheet("""
             QListWidget {
                 min-width: 400px;
@@ -112,6 +118,10 @@ class CreatorWindow(QMainWindow):
             QListWidget::item {
                 height: 24px;
                 padding: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(91, 124, 250, 0.35);
+                color: #e6e8ee;
             }
         """)
         self.music_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -131,6 +141,10 @@ class CreatorWindow(QMainWindow):
         save_btn.setObjectName("primaryBtn")
         save_btn.clicked.connect(self._save)
         root.addWidget(save_btn)
+
+        # 所有可点击按钮显示"链接选择"小手光标
+        for _btn in self.findChildren(QPushButton):
+            _btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
     # ---------- 文件选择 ----------
     def _add_images(self):
