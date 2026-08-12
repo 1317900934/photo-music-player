@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QPushButton,
     QVBoxLayout,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from bundle import create_bundle
 from dark_messagebox import show_information, show_warning, show_critical, show_question
+from sortable_list import SortableListWidget
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
 
 IMAGE_FILTER = "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp *.gif);;所有文件 (*.*)"
@@ -68,7 +68,7 @@ class CreatorWindow(QMainWindow):
         img_header.addWidget(add_img)
         root.addLayout(img_header)
 
-        self.image_list = QListWidget()
+        self.image_list = SortableListWidget(self.image_paths)
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.image_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.image_list.setStyleSheet("""
@@ -106,7 +106,7 @@ class CreatorWindow(QMainWindow):
         music_header.addWidget(add_music)
         root.addLayout(music_header)
 
-        self.music_list = QListWidget()
+        self.music_list = SortableListWidget(self.music_paths)
         self.music_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.music_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.music_list.setStyleSheet("""
@@ -151,17 +151,13 @@ class CreatorWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "选择照片", "", IMAGE_FILTER)
         for f in files:
             self.image_paths.append(f)
-            item = QListWidgetItem(os.path.basename(f))
-            item.setToolTip(os.path.basename(f))
-            self.image_list.addItem(item)
+            self.image_list.add_item(f, os.path.basename(f))
 
     def _add_musics(self):
         files, _ = QFileDialog.getOpenFileNames(self, "选择音乐", "", MUSIC_FILTER)
         for f in files:
             self.music_paths.append(f)
-            item = QListWidgetItem(os.path.basename(f))
-            item.setToolTip(os.path.basename(f))
-            self.music_list.addItem(item)
+            self.music_list.add_item(f, os.path.basename(f))
 
     def _remove_selected(self, list_widget: QListWidget, paths: list):
         """移除选中的列表项，并同步删除对应路径。"""
@@ -173,6 +169,7 @@ class CreatorWindow(QMainWindow):
             list_widget.takeItem(row)
             if row < len(paths):
                 paths.pop(row)
+        list_widget.refresh_numbers()
 
     # ---------- 保存 ----------
     def _save(self):
