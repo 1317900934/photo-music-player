@@ -48,9 +48,12 @@ from PySide6.QtWidgets import (
     QScrollBar,
     QApplication,
     QStyle,
+    QStyleOptionButton,
+    QStyleOptionSlider,
 )
 
-from bundle import Bundle, BundleError
+from bundle import Bundle
+from sortable_list import HoverImagePreview
 from titlebar import (
     APP_ICON,
     _screen_geometry,
@@ -70,8 +73,13 @@ def _fmt_ms(ms: int) -> str:
 
 PLAY_MODES = ["顺序播放", "单曲循环", "随机播放"]
 MODE_ICONS = {"顺序播放": "🔁", "单曲循环": "🔂", "随机播放": "🔀"}
+MODE_LABELS = {
+    "顺序播放": "列表循环",
+    "单曲循环": "单曲循环",
+    "随机播放": "随机播放",
+}
 MODE_TIPS = {
-    "顺序播放": "顺序播放：按列表依次播放，最后一首播完后回到第一首继续",
+    "顺序播放": "列表循环：按列表依次播放，全部播完后回到第一首继续",
     "单曲循环": "单曲循环：当前歌曲循环播放",
     "随机播放": "随机播放：在未播放过的歌曲中随机，全部播完后开始新一轮",
 }
@@ -79,12 +87,48 @@ MODE_TIPS = {
 
 class ClickableSlider(QSlider):
     """支持点击任意位置跳转的滑块控件。"""
+    def _value_at(self, event):
+        """把点击坐标换算成滑块值：按滑轨（groove）实际可移动范围映射，
+        保证手柄中心对准鼠标点；直接用整个控件宽度映射会在左右两端明显偏移。"""
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderGroove, self,
+        )
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderHandle, self,
+        )
+        if self.orientation() == Qt.Orientation.Horizontal:
+            span = groove.width() - handle.width()
+            pos = event.position().x() - groove.left() - handle.width() / 2.0
+        else:
+            span = groove.height() - handle.height()
+            pos = event.position().y() - groove.top() - handle.height() / 2.0
+        if span <= 0:
+            return self.minimum()
+        ratio = pos / span
+        ratio = max(0.0, min(1.0, ratio))
+        return self.minimum() + int(round((self.maximum() - self.minimum()) * ratio))
+
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            value = self.minimum() + (self.maximum() - self.minimum()) * event.position().x() / self.width()
-            self.setValue(int(value))
-            self.sliderMoved.emit(int(value))
+            value = self._value_at(event)
+            self.setValue(value)
+            self.sliderMoved.emit(value)
+            # 点击滑道（尤其滑块够不到的右端末尾区）时，Qt 不会进入拖拽态，
+            # 也就不会发出 sliderPressed/sliderReleased，导致跳转逻辑根本不执行；
+            # 这里手动补发这两个信号。
+            self.sliderPressed.emit()
+            self._press_handled = True
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton and getattr(self, '_press_handled', False):
+            self._press_handled = False
+            self.sliderReleased.emit()
+        super().mouseReleaseEvent(event)
 
 
 class GalleryImageLabel(QLabel):
@@ -183,6 +227,8 @@ class _ViewerImageLabel(QLabel):
         self._pan_x = 0.0
         self._pan_y = 0.0
         self.update()
+        # 重置为默认缩放后立即同步光标，避免残留小手样式。
+        self._update_cursor()
 
     def set_cursor_hidden(self, hidden):
         """隐藏或显示光标：隐藏时使用 BlankCursor，不污染全局光标栈。"""
@@ -245,8 +291,18 @@ class _ViewerImageLabel(QLabel):
             return
         factor = 1.15 ** (delta / 120.0)
         old = self._scale
-        new = max(1.0, min(old * factor, self.MAX_SCALE))
+        new = old * factor
+        # 消除浮点误差：滚轮缩回默认比例时必须精确回到 1.0，
+        # 否则 _scale 略大于 1.0（如 1.0000000000000002）会让光标
+        # 错误地保持小手样式；最大值边界同理。
+        if new < 1.0 or abs(new - 1.0) < 1e-9:
+            new = 1.0
+        elif new > self.MAX_SCALE or abs(new - self.MAX_SCALE) < 1e-9:
+            new = self.MAX_SCALE
         if abs(new - old) < 1e-9:
+            # 缩放没有实际变化（已处于默认大小/最大缩放），
+            # 也要同步一次光标，确保回到默认比例后恢复箭头。
+            self._update_cursor()
             event.accept()
             return
         # 以鼠标位置为锚点缩放：保持鼠标指向的图片点不动
@@ -381,44 +437,217 @@ class _ClickableLabel(QLabel):
 
 
 class _MarqueeButton(QPushButton):
-    """按钮：文本超出可用宽度时，悬停自动滚动走马灯效果。"""
+    """按钮：文本超出可用宽度时，悬停后文本在选项内左右往返滚动，便于浏览全名。
+
+    滚动方式是「窗口滑动」：显示窗口先在名称上从左向右移到末尾，
+    稍作停留再反向移回开头，如此往复；移出悬停后恢复显示原文。
+    """
+
+    SCROLL_PADDING = 12   # 滚动时文字与可视区左右边缘的间距（px）
+    PAUSE_MS = 1500       # 到达端点后的停留时间（毫秒），便于看清结尾/开头
+    SPEED_PX = 30         # 正常滚动速度（像素/秒）
+    # 端点缓动：距离端点这么近时才开始减速（px）
+    EASE_RANGE = 40
+    # 端点最低速度（px/s）：减速也不能低于这个值，否则停顿感太强
+    EASE_MIN_SPEED = 15
 
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self._original_text = text
-        self._scroll_buf = ""
-        self._scroll_pos = 0
-        self._scroll_timer = QTimer(self)
-        self._scroll_timer.setInterval(200)
-        self._scroll_timer.timeout.connect(self._on_tick)
+        self._hovered = False     # 是否处于悬停状态
+        self._scrolling = False   # 文本是否超宽需要滚动
+        self._scroll_px = 0.0     # 当前像素偏移（0 = 显示开头）
+        self._max_px = 0.0        # 最大像素偏移（文字总宽 - 可视宽）
+        self._forward = True      # 当前滚动方向
+        self._anim = QVariantAnimation(self)
+        # 线性基线 + 手动"端点减速"：起点不做缓动，仅接近端点时
+        # 逐步减速到 EASE_MIN_SPEED，避免全速撞停的突兀感。
+        self._anim.setEasingCurve(QEasingCurve.Type.Linear)
+        self._anim.valueChanged.connect(self._on_scroll_value)
+        self._anim.finished.connect(self._on_scroll_finished)
+        self._pause_timer = QTimer(self)
+        self._pause_timer.setSingleShot(True)
+        self._pause_timer.setInterval(self.PAUSE_MS)
+        self._pause_timer.timeout.connect(self._reverse_scroll)
 
     def enterEvent(self, event):
         super().enterEvent(event)
-        fm = self.fontMetrics()
-        available = self.width() - 14
-        if fm.horizontalAdvance(self._original_text) > available:
-            self._scroll_buf = self._original_text + "        "
-            self._scroll_pos = 0
-            self._scroll_timer.start()
+        self._hovered = True
+        self._maybe_start_scroll()
 
     def leaveEvent(self, event):
+        self._hovered = False
         super().leaveEvent(event)
-        self._scroll_timer.stop()
-        self.setText(self._original_text)
+        self._stop_scroll()
 
-    def _on_tick(self):
-        if not self._scroll_buf:
+    def _maybe_start_scroll(self):
+        """悬停时若文本超出可用宽度，启动往返滚动。"""
+        text = self._original_text
+        fm = self.fontMetrics()
+        # 内容区减去左右内边距后，才是文字可用的实际宽度
+        available = self.contentsRect().width() - 2 * self.SCROLL_PADDING
+        if fm.horizontalAdvance(text) > available:
+            # float 类型：QVariantAnimation 要求 start/end 类型一致，
+            # int/float 混用会导致 valueChanged 不触发
+            self._max_px = float(fm.horizontalAdvance(text) - available)
+            self._scroll_px = 0.0
+            self._forward = True
+            self._scrolling = True
+            self._scroll_forward()
+        else:
+            self._scrolling = False
+            self.setText(text)
+            self.update()
+
+    def _stop_scroll(self):
+        self._anim.stop()
+        self._pause_timer.stop()
+        self._scrolling = False
+        self._scroll_px = 0.0
+        self.setText(self._original_text)
+        self.update()
+
+    def _scroll_forward(self):
+        """向右滚动：从开头线性移到末尾，接近末尾时逐步减速。"""
+        self._start_scroll_to(self._max_px)
+
+    def _reverse_scroll(self):
+        """到达端点后按方向切换：末尾→开头，开头→末尾，如此循环。"""
+        if self._forward:
+            end = 0.0
+            self._forward = False
+        else:
+            end = self._max_px
+            self._forward = True
+        self._start_scroll_to(end)
+
+    def _start_scroll_to(self, target):
+        """从当前位置移动到 target：起点匀速(SPEED_PX)，仅接近端点时减速到 EASE_MIN_SPEED。
+
+        时间分配：匀速段按 SPEED_PX，减速段（EASE_RANGE 内）速度从 SPEED_PX
+        线性降到 EASE_MIN_SPEED（平均速度取二者均值），保证总时长与曲线一致。
+        """
+        self._anim.stop()
+        pos = self._scroll_px
+        dist = abs(target - pos)
+        if dist < 0.5:
+            # 已经在端点（理论上不会发生，防御性处理）
+            self._scroll_px = target
+            self.update()
+            self._pause_timer.start()
             return
-        self._scroll_pos = (self._scroll_pos + 1) % len(self._scroll_buf)
-        t = self._scroll_buf[self._scroll_pos:] + self._scroll_buf[:self._scroll_pos]
-        self.setText(t)
+        t_const = (dist - self.EASE_RANGE) / self.SPEED_PX
+        t_ease = self.EASE_RANGE / ((self.SPEED_PX + self.EASE_MIN_SPEED) / 2)
+        duration = int((t_const + t_ease) * 1000)
+        self._anim.setStartValue(pos)
+        self._anim.setEndValue(target)
+        self._anim.setDuration(max(1, duration))
+        self._anim.start()
+
+    def _ease_progress(self, t, dist):
+        """把线性时间 t(0..1) 映射为带端点减速的进度 p(0..1)。
+
+        起点不做缓动（直接全速出发）；仅在接近端点的那一段
+        （EASE_RANGE 内）减速，末端速度恰好为 EASE_MIN_SPEED / SPEED_PX，
+        避免"全速撞停"的生硬感，同时保持最低滚动速度。
+        """
+        m = self.EASE_MIN_SPEED / self.SPEED_PX
+        if dist <= self.EASE_RANGE:
+            # 整段都在减速区：Hermite 从速度 1 平滑降到 m
+            return self._hermite(t, 0.0, 1.0, 1.0, m)
+        t_const = (dist - self.EASE_RANGE) / self.SPEED_PX
+        t_ease = self.EASE_RANGE / ((self.SPEED_PX + self.EASE_MIN_SPEED) / 2)
+        total = t_const + t_ease
+        cf = t_const / total   # 匀速段时间比例
+        ef = t_ease / total    # 减速段时间比例
+        # 全程平均速度比例 k，使总位移归一化为 1
+        k = 1.0 / (cf + (1.0 + m) / 2.0 * ef)
+        if t <= cf:
+            return k * t
+        # 减速段：Hermite 三次插值，进入时速度 = k（连续），末端 = k*m
+        s = (t - cf) / ef
+        return self._hermite(s, k * cf, 1.0, k * ef, k * m * ef)
+
+    @staticmethod
+    def _hermite(s, p0, p1, d0, d1):
+        """三次 Hermite 插值：p0→p1，起点导数 d0、终点导数 d1（对 s）。"""
+        s2 = s * s
+        s3 = s2 * s
+        h00 = 2 * s3 - 3 * s2 + 1
+        h10 = s3 - 2 * s2 + s
+        h01 = -2 * s3 + 3 * s2
+        h11 = s3 - s2
+        return h00 * p0 + h10 * d0 + h01 * p1 + h11 * d1
+
+    def _on_scroll_value(self, v):
+        # QVariantAnimation 在 Linear easing 下 v 本身就是精确的线性进度，
+        # 用它做时间基准（currentTime 在回调里与 v 不同步，不可靠）
+        start = self._anim.startValue()
+        end = self._anim.endValue()
+        dist = abs(end - start)
+        if dist <= 0:
+            self._scroll_px = float(v)
+            self.update()
+            return
+        t = (float(v) - start) / (end - start)
+        p = self._ease_progress(t, dist)
+        self._scroll_px = start + (end - start) * p
+        self.update()
+
+    def _on_scroll_finished(self):
+        if not self._scrolling or not self._hovered:
+            return
+        # 到达端点后暂停，再反向
+        self._pause_timer.start()
+
+    def paintEvent(self, event):
+        """文字超宽且悬停时：绘制带左右内边距的滚动文本。
+
+        通过 setText 保留完整原文（避免省略号），绘制时按像素偏移裁切，
+        让文字在左右两边各留 SCROLL_PADDING 的内边距，便于看清首尾。
+        悬停/选中背景由 QSS 负责（画了 QStyle 按钮背景），滚动只替换文字层，
+        因此滚动时悬停高亮不会丢失。
+        """
+        if self._scrolling and self._hovered:
+            # 1. 先画 QSS 背景（含 :hover / :checked 高亮）
+            opt = QStyleOptionButton()
+            opt.initFrom(self)
+            # initFrom 不携带 checked 状态，需手动补上 State_On，
+            # 否则 QSS :checked 背景不会绘制
+            if self.isChecked():
+                opt.state |= QStyle.StateFlag.State_On
+            # 兜底：滚动期间也强制 MouseOver，保证 QSS :hover 高亮一定存在
+            if self._hovered and not (opt.state & QStyle.StateFlag.State_MouseOver):
+                opt.state |= QStyle.StateFlag.State_MouseOver
+            # 清空文本：背景由 QSS 负责，文字由下方滚动绘制，
+            # 避免 drawControl 再画一遍原文造成重影
+            opt.text = ""
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.style().drawControl(QStyle.ControlElement.CE_PushButton, opt, p, self)
+            # 2. 再画滚动文本（裁切到内容区）
+            cr = self.contentsRect()
+            text = self._original_text
+            fm = self.fontMetrics()
+            draw_x = cr.left() + self.SCROLL_PADDING - int(round(self._scroll_px))
+            p.save()
+            p.setClipRect(cr.adjusted(0, 0, -1, -1))
+            p.setPen(self.palette().color(self.foregroundRole()))
+            p.drawText(
+                QPointF(draw_x, cr.center().y() + fm.ascent() / 2 - fm.descent() / 2 + 1),
+                text,
+            )
+            p.restore()
+            p.end()
+            return
+        super().paintEvent(event)
 
 
 class _ImageListPopup(QFrame):
     """可滚动列表弹窗：走马灯效果、高度上限5项、悬停链接光标。
     图片列表和音乐列表共用此弹窗。"""
 
-    def __init__(self, items, current_index, on_select, parent=None):
+    def __init__(self, items, current_index, on_select, parent=None, preview_paths=None):
         # Popup 类型：临时弹出窗口，不占用任务栏、点击外部自动关闭
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("imageListPopup")
@@ -452,6 +681,8 @@ class _ImageListPopup(QFrame):
         """)
         self._on_select = on_select
         self._items = []
+        self._preview_paths = preview_paths or []
+        self._preview = HoverImagePreview() if self._preview_paths else None
 
         fm = self.fontMetrics()
         max_text_w = max(
@@ -480,12 +711,20 @@ class _ImageListPopup(QFrame):
             name = item.get("name", f"项目 {i + 1}")
             btn = _MarqueeButton(f"{i + 1}. {name}")
             btn.setFixedHeight(34)
+            # 宽度跟随滚动视口：保证「超宽文字」在按钮内真实裁切，
+            # 而不是把滚动区撑宽导致永远放得下、走马灯永不触发。
+            btn.setMinimumWidth(1)
+            btn.setMaximumWidth(10000)
+            btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             btn.setCheckable(True)
             btn.setChecked(i == current_index)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, idx=i: self._pick(idx))
             lay.addWidget(btn)
             self._items.append(btn)
+            if self._preview is not None:
+                btn._preview_index = i
+                btn.installEventFilter(self)
 
         # 滚动区域：隐藏原生滚动条，内容溢出时用滚轮滚动
         scroll = QScrollArea()
@@ -562,6 +801,8 @@ class _ImageListPopup(QFrame):
         """隐藏时停止滚动动画，避免后台继续动。"""
         if getattr(self, "_scroll_anim", None):
             self._scroll_anim.stop()
+        if getattr(self, "_preview", None):
+            self._preview.hide_preview()
         super().hide()
 
     def paintEvent(self, event):
@@ -589,6 +830,12 @@ class _ImageListPopup(QFrame):
             self.hide()
 
     def eventFilter(self, obj, event):
+        # 图片列表：悬停按钮时右侧显示预览小窗
+        if self._preview is not None and isinstance(obj, _MarqueeButton):
+            if event.type() == QEvent.Type.Enter:
+                self._show_button_preview(obj)
+            elif event.type() == QEvent.Type.Leave:
+                self._preview.hide_preview()
         # 滚轮事件（viewport/滚动条/弹窗本身）统一走平滑动画
         if event.type() == QEvent.Type.Wheel:
             self.wheelEvent(event)
@@ -599,6 +846,15 @@ class _ImageListPopup(QFrame):
                 self.hide()
                 return True
         return super().eventFilter(obj, event)
+
+    def _show_button_preview(self, btn):
+        """在弹窗右侧显示被悬停按钮对应图片的预览。"""
+        idx = getattr(btn, "_preview_index", None)
+        if idx is None or idx >= len(self._preview_paths):
+            return
+        anchor = self.mapToGlobal(self.rect().topRight())
+        anchor.setY(btn.mapToGlobal(btn.rect().center()).y())
+        self._preview.show_image(self._preview_paths[idx], anchor)
 
     def _frame_rect_contains(self, gpos) -> bool:
         g = self.frameGeometry()
@@ -1141,10 +1397,13 @@ class PlayerWindow(QMainWindow):
         self.list_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.list_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.list_btn.clicked.connect(self._show_music_menu)
-        self.list_btn.setVisible(len(self.musics) > 1)
         row1.addWidget(self.song_label, 1)
         row1.addWidget(self.list_btn)
         panel_layout.addLayout(row1)
+        # 等 row1 真正挂到 panel（按钮获得父窗口）后再设置可见性：
+        # 若在无父状态调用 setVisible(True)，Qt 会把按钮当成独立顶层窗口显示，
+        # 表现为启动时在相册左上部闪出一个白色小窗（任务栏标题为应用名）。
+        self.list_btn.setVisible(len(self.musics) > 1)
 
         # 进度条行
         row2 = QHBoxLayout()
@@ -1157,6 +1416,11 @@ class PlayerWindow(QMainWindow):
         self.progress.sliderPressed.connect(self._on_slider_pressed)
         self.progress.sliderReleased.connect(self._on_slider_released)
         self.progress.sliderMoved.connect(self._on_slider_moved)
+        # 跳转确认定时器：松手后短暂保持 _seeking，
+        # 屏蔽跳转完成前播放器回传的旧位置，随后再与真实位置同步
+        self._seek_timer = QTimer(self)
+        self._seek_timer.setSingleShot(True)
+        self._seek_timer.timeout.connect(self._finish_seek)
         row2.addWidget(self.time_label)
         row2.addWidget(self.progress, 1)
         panel_layout.addLayout(row2)
@@ -1234,6 +1498,7 @@ class PlayerWindow(QMainWindow):
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
         self.player.mediaStatusChanged.connect(self._on_status)
+        self.player.playbackStateChanged.connect(self._on_playback_state)
         self.player.errorOccurred.connect(self._on_error)
 
     def _select_music(self, index: int):
@@ -1255,11 +1520,12 @@ class PlayerWindow(QMainWindow):
 
     # ---------- 播放模式 / 切歌 ----------
     def _update_mode_button(self):
-        self.mode_btn.setText(f"{MODE_ICONS[self.play_mode]} {self.play_mode}")
+        label = MODE_LABELS.get(self.play_mode, self.play_mode)
+        self.mode_btn.setText(f"{MODE_ICONS[self.play_mode]} {label}")
         self.mode_btn.setToolTip(MODE_TIPS[self.play_mode])
 
     def _cycle_mode(self):
-        """顺序播放 → 单曲循环 → 随机播放 → 顺序播放 循环切换。"""
+        """列表循环 → 单曲循环 → 随机播放 → 列表循环 循环切换。"""
         idx = PLAY_MODES.index(self.play_mode)
         self.play_mode = PLAY_MODES[(idx + 1) % len(PLAY_MODES)]
         self._update_mode_button()
@@ -1313,6 +1579,12 @@ class PlayerWindow(QMainWindow):
         """切换播放/暂停的图标与文字（标准媒体图标，紧凑美观）。"""
         self.play_btn.setIcon(self._pause_icon if playing else self._play_icon)
         self.play_btn.setText(" 暂停" if playing else " 播放")
+
+    def _on_playback_state(self, state):
+        """播放状态变化时同步播放/暂停按钮（含跳转后恢复播放等场景）。"""
+        self._update_play_button(
+            state == QMediaPlayer.PlaybackState.PlayingState
+        )
 
     def _make_media_icon(self, kind: str) -> QIcon:
         """生成白灰色实心播放/暂停图标。
@@ -1397,7 +1669,13 @@ class PlayerWindow(QMainWindow):
             self._popup_ref = None
             return
         popup = _ImageListPopup(
-            self.images, self.image_index, self._show_image, parent=self
+            self.images,
+            self.image_index,
+            self._show_image,
+            parent=self,
+            preview_paths=[
+                self.bundle.asset_path(item["path"]) for item in self.images
+            ],
         )
         self._popup_ref = popup
         popup._label_ref = self.index_label
@@ -1473,18 +1751,17 @@ class PlayerWindow(QMainWindow):
         self.progress.setRange(0, max(0, ms))
 
     def _on_status(self, status):
-        """歌曲播放完：按当前播放模式决定下一首。"""
+        """歌曲播放完：按当前播放模式决定下一首，任何模式都不会停止播放。"""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if self.play_mode == "单曲循环":
+            if len(self.musics) <= 1 or self.play_mode == "单曲循环":
+                # 只有一首歌（无论哪种模式）或单曲循环：回到开头继续播放
                 self.player.setPosition(0)
                 self.player.play()
-                return
-            if len(self.musics) <= 1:
-                self._update_play_button(False)
+                self._update_play_button(True)
                 return
             if self.play_mode == "随机播放":
                 nxt = self._pop_next_random()
-            else:  # 顺序播放：最后一首播完回到第一首
+            else:  # 列表循环：最后一首播完回到第一首
                 nxt = (self.music_index + 1) % len(self.musics)
             self._select_music(nxt)
 
@@ -1494,13 +1771,37 @@ class PlayerWindow(QMainWindow):
 
     def _on_slider_pressed(self):
         self._seeking = True
+        self._seek_timer.stop()  # 取消上一次未完成的跳转确认
 
     def _on_slider_moved(self, pos: int):
         self.time_label.setText(f"{_fmt_ms(pos)} / {_fmt_ms(self.player.duration())}")
 
     def _on_slider_released(self):
+        dur = self.player.duration()
+        target = self.progress.value()
+        if dur > 0:
+            # 靠近流末尾的跳转在 FFmpeg 后端会静默失败（进度闪回原位、跳转无效），
+            # 因此把目标限制在距末尾一段安全距离内。
+            margin = min(2000, max(100, dur // 10))
+            target = min(target, max(0, dur - margin))
+            self.progress.setValue(target)
+        # 歌曲已播完时，先跳转再恢复播放（否则 setPosition 不生效）
+        at_end = (
+            self.player.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia
+            or (dur > 0 and self.player.position() >= dur)
+        )
+        self.player.setPosition(target)
+        if at_end:
+            self.player.play()
+        # 保持 _seeking，屏蔽跳转过程中播放器回传的旧位置；随后与真实位置同步
+        self._seek_timer.start(250)
+
+    def _finish_seek(self):
         self._seeking = False
-        self.player.setPosition(self.progress.value())
+        self.progress.setValue(self.player.position())
+        self.time_label.setText(
+            f"{_fmt_ms(self.player.position())} / {_fmt_ms(self.player.duration())}"
+        )
 
     def _on_volume(self, value: int):
         self.audio.setVolume(value / 100.0)
@@ -1510,9 +1811,15 @@ class PlayerWindow(QMainWindow):
 
     # ---------- 窗口状态记忆 ----------
     def _settings(self) -> QSettings:
-        """窗口状态存到项目目录下（便携，随文件夹一起拷贝）。"""
-        ini = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "player_state.ini"
+        """窗口状态存到项目目录下（便携，随文件夹一起拷贝）。
+
+        测试可用环境变量 PMB_STATE_INI 覆盖状态文件路径，避免污染用户设置。
+        """
+        ini = os.environ.get(
+            "PMB_STATE_INI",
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "player_state.ini"
+            ),
         )
         return QSettings(ini, QSettings.Format.IniFormat)
 

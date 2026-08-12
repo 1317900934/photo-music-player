@@ -13,7 +13,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication
 
-from bundle import Bundle, BundleError, create_bundle, is_bundle
+from bundle import Bundle, BundleError, create_bundle, extract_bundle, is_bundle
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -53,6 +53,19 @@ def make_wav(path, seconds=3, freq=440, rate=44100):
 
 
 def main():
+    # 播放器把播放模式/音量持久化到 player_state.ini；测试改用临时
+    # 状态文件，既不影响用户设置，也保证每次测试都从"顺序播放"开始。
+    from PySide6.QtCore import QSettings
+
+    test_state_ini = os.path.join(
+        tempfile.gettempdir(), f"pmb_test_state_{os.getpid()}.ini"
+    )
+    os.environ["PMB_STATE_INI"] = test_state_ini
+    st = QSettings(test_state_ini, QSettings.Format.IniFormat)
+    st.setValue("play_mode", "顺序播放")
+    st.setValue("volume", 80)
+    st.sync()
+
     tmp = tempfile.mkdtemp(prefix="smoke_")
     img1 = os.path.join(tmp, "photo_a.png")
     img2 = os.path.join(tmp, "photo_b.png")
@@ -72,6 +85,63 @@ def main():
     check("图片数量=2", len(b.images) == 2)
     check("音乐数量=1", len(b.musics) == 1)
     check("解压后图片可读", os.path.exists(b.asset_path(b.images[0]["path"])))
+
+    # ---- 序号前缀：包内文件带 0001_ 前缀，manifest 保留原始名 ----
+    check("图片1包内名带前缀", b.images[0]["path"].endswith("0001_photo_a.png"))
+    check("图片2包内名带前缀", b.images[1]["path"].endswith("0002_photo_b.png"))
+    check("音乐包内名带前缀", b.musics[0]["path"].endswith("0001_song.wav"))
+    check("manifest 图片名保留原始名", b.images[0]["name"] == "photo_a.png")
+    check("manifest 音乐名保留原始名", b.musics[0]["name"] == "song.wav")
+
+    # ---- 拆解：还原原始文件名，不带序号前缀 ----
+    extract_dir = os.path.join(tmp, "extract")
+    os.makedirs(extract_dir, exist_ok=True)
+    extracted = extract_bundle(bundle_path, extract_dir)
+    img_names = sorted(os.listdir(os.path.join(extracted, "图片")))
+    music_names = sorted(os.listdir(os.path.join(extracted, "音乐")))
+    check("拆解图片名还原无前缀", img_names == ["photo_a.png", "photo_b.png"])
+    check("拆解音乐名还原无前缀", music_names == ["song.wav"])
+
+    # ---- 图片允许重名：显示名相同，包内靠序号前缀区分 ----
+    dup_a = os.path.join(tmp, "dup_a")
+    dup_b = os.path.join(tmp, "dup_b")
+    os.makedirs(dup_a, exist_ok=True)
+    os.makedirs(dup_b, exist_ok=True)
+    make_image(os.path.join(dup_a, "同款.png"), 300, 200, "#222222", "A")
+    make_image(os.path.join(dup_b, "同款.png"), 300, 200, "#444444", "B")
+    dup_path = os.path.join(tmp, "dup.pmb")
+    create_bundle(
+        "重名相册",
+        [os.path.join(dup_a, "同款.png"), os.path.join(dup_b, "同款.png")],
+        [],
+        dup_path,
+    )
+    bd = Bundle(dup_path)
+    check("重名图片数量=2", len(bd.images) == 2)
+    check("重名图片显示名相同", bd.images[0]["name"] == bd.images[1]["name"] == "同款.png")
+    check("重名图片包内路径不同", bd.images[0]["path"] != bd.images[1]["path"])
+    extract_dir2 = os.path.join(tmp, "extract_dup")
+    os.makedirs(extract_dir2, exist_ok=True)
+    extracted2 = extract_bundle(dup_path, extract_dir2)
+    dup_out = sorted(os.listdir(os.path.join(extracted2, "图片")))
+    check("重名图片拆解不覆盖", len(dup_out) == 2 and "同款 (2).png" in dup_out)
+    bd.close()
+
+    # 数据层兼容旧包：manifest 显示名允许重复（旧版本产物），
+    # 界面层已禁止产生新的重名
+    named_dup_path = os.path.join(tmp, "named_dup.pmb")
+    create_bundle(
+        "显示重名",
+        [img1, img2],
+        [],
+        named_dup_path,
+        image_names=["同款.png", "同款.png"],
+    )
+    bnd = Bundle(named_dup_path)
+    check("显示重名 manifest 名相同",
+          bnd.images[0]["name"] == bnd.images[1]["name"] == "同款.png")
+    check("显示重名包内路径不同", bnd.images[0]["path"] != bnd.images[1]["path"])
+    bnd.close()
 
     # GUI 部分
     from player_window import PlayerWindow
@@ -278,6 +348,104 @@ def main():
           bool(cw.windowFlags() & Qt.WindowType.FramelessWindowHint))
     check("创建窗口有标题栏", hasattr(cw, "_tb_title"))
     cw.close()
+
+    # ---- 编辑窗口：加载时去掉序号前缀，重编号恢复 ----
+    from editor_window import EditorWindow
+
+    ew = EditorWindow()
+    check("编辑窗口加载成功", ew.load_bundle(bundle_path))
+    check("编辑加载图片名无前缀",
+          all(not os.path.basename(p).startswith("0001_") for p in ew.image_paths))
+    check("编辑加载音乐名无前缀",
+          all(not os.path.basename(p).startswith("0001_") for p in ew.music_paths))
+
+    # 保存流：加载（去前缀）后直接打包，包内仍是单层序号前缀
+    save_path = os.path.join(tmp, "saved.pmb")
+    create_bundle("保存流", list(ew.image_paths), list(ew.music_paths), save_path)
+    bs = Bundle(save_path)
+    check("保存流包内名单层前缀", bs.images[0]["path"].endswith("0001_photo_a.png"))
+    check("保存流 manifest 名无前缀", bs.images[0]["name"] == "photo_a.png")
+    bs.close()
+
+    ew._renumber_temp_files()
+    check("编辑重编号图片",
+          ew.image_paths[0].endswith("0001_photo_a.png")
+          and ew.image_paths[1].endswith("0002_photo_b.png"))
+    check("编辑重编号音乐", ew.music_paths[0].endswith("0001_song.wav"))
+    ew.close()
+
+    # 编辑界面重命名遇到重名直接失败并提示
+    import editor_window as ew_mod
+
+    ew4 = EditorWindow()
+    check("重名编辑加载成功", ew4.load_bundle(bundle_path))
+    ew4.image_list.setCurrentRow(1)
+    ew4.image_list.item(1).setSelected(True)
+    orig_dialog = ew_mod.show_input_dialog
+    orig_warning = ew_mod.show_warning
+    warnings = []
+    ew_mod.show_input_dialog = lambda *a, **k: ("photo_a.png", True)
+    ew_mod.show_warning = lambda *a, **k: warnings.append(a) or None
+    try:
+        ew4._rename_selected(ew4.image_list, ew4.image_paths)
+    finally:
+        ew_mod.show_input_dialog = orig_dialog
+        ew_mod.show_warning = orig_warning
+    check("重命名重名直接失败",
+          len(warnings) == 1 and "重名" in str(warnings[0]))
+    check("重命名失败后显示名未变",
+          ew4.image_list.item_name(ew4.image_list.item(1)) == "photo_b.png")
+    check("重命名失败后磁盘未变",
+          os.path.basename(ew4.image_paths[1]) == "photo_b.png")
+    ew4.close()
+
+    # 加载含重名图片的包时，界面显示名带 " (2)" 后缀，不隐藏
+    ew5 = EditorWindow()
+    check("重名包编辑加载成功", ew5.load_bundle(dup_path))
+    check("重名包第一项显示原名",
+          ew5.image_list.item_name(ew5.image_list.item(0)) == "同款.png")
+    check("重名包第二项显示后缀",
+          ew5.image_list.item_name(ew5.image_list.item(1)) == "同款 (2).png")
+    ew5.close()
+
+    # 添加同名文件时自动生成不重复的显示名
+    from sortable_list import SortableListWidget
+
+    sl = SortableListWidget([])
+    sl.add_item("x", "photo.png")
+    check("唯一名-同名追加后缀", sl.unique_name("photo.png") == "photo (2).png")
+    check("唯一名-不同名不变", sl.unique_name("other.png") == "other.png")
+    sl.add_item("x", sl.unique_name("photo.png"))
+    check("唯一名-后缀再同名继续递增", sl.item_name(sl.item(1)) == "photo (2).png")
+    check("唯一名-第三个继续递增", sl.unique_name("photo.png") == "photo (3).png")
+
+    # 悬停预览容器：深色圆角背景包裹图片
+    from sortable_list import HoverImagePreview
+
+    hp = HoverImagePreview()
+    hp.show_image(img1, QPoint(100, 100))
+    hp_pm = hp.grab()
+    check("预览容器深色背景",
+          hp_pm.toImage().pixelColor(2, hp_pm.height() // 2).name().lower()
+          == "#1d2027")
+    check("预览容器圆角外透明",
+          hp_pm.toImage().pixelColor(1, 1).alpha() == 0)
+    hp.hide_preview()
+
+    # ---- 创建窗口：每次打开前重置为空 ----
+    cw.image_paths.append(img1)
+    cw.image_list.add_item(img1, os.path.basename(img1))
+    cw.music_paths.append(song)
+    cw.music_list.add_item(song, os.path.basename(song))
+    check("图片列表关闭悬停名称提示",
+          cw.image_list.item(0).toolTip() == "")
+    check("音乐列表保留悬停名称提示",
+          cw.music_list.item(0).toolTip() == os.path.basename(song))
+    cw.title_edit.setText("残留标题")
+    cw.reset()
+    check("创建窗口重置图片列表",
+          len(cw.image_paths) == 0 and cw.image_list.count() == 0)
+    check("创建窗口重置标题", cw.title_edit.text() == "")
 
     win.close()
     app.processEvents()

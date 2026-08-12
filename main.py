@@ -29,7 +29,7 @@ import file_assoc
 from bundle import Bundle, BundleError, extract_bundle
 from creator_window import CreatorWindow
 from editor_window import EditorWindow
-from dark_messagebox import show_information, show_warning, show_critical, show_question
+from dark_messagebox import show_information, show_warning
 from player_window import PlayerWindow
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
 
@@ -262,11 +262,6 @@ class MainWindow(QMainWindow):
         extract_btn.clicked.connect(self._extract_bundle)
         root.addWidget(extract_btn)
 
-        tip = QLabel("提示：也可以直接把 .pmb 文件拖到窗口上打开")
-        tip.setObjectName("hint")
-        tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(tip)
-
         assoc_row = QHBoxLayout()
         assoc_row.addStretch()
         assoc_btn = QPushButton("⚙ 设置 .pmb 文件关联")
@@ -300,6 +295,10 @@ class MainWindow(QMainWindow):
         if self.creator is None:
             self.creator = CreatorWindow(self)
             self.creator.saved.connect(self._play_bundle_path)
+        # 每次重新打开都是全新空白窗口：清空上次留下的列表和输入框；
+        # 窗口已打开时不重置，避免误点按钮清掉正在编辑的内容
+        if not self.creator.isVisible():
+            self.creator.reset()
         self.creator.show()
         self.creator.raise_()
 

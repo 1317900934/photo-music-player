@@ -2,7 +2,7 @@
 """自定义深色主题消息框，替代系统默认 QMessageBox。"""
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCursor, QPainter, QPen, QColor, QRadialGradient
+from PySide6.QtGui import QCursor, QPainter, QPen, QColor
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,

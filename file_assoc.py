@@ -28,9 +28,7 @@ def _launcher() -> str:
 
 
 def _icon_path() -> str:
-    """默认图标：优先用程序自带的 .pmb 图标（照片预览样式 + 右下角徽标）。
-
-    图标文件由 scripts/render_icons.py 从 icons/pmb_icon.svg 渲染生成，
+    """默认图标：使用程序自带的 .pmb 图标（icons/pmb_icon.ico，多尺寸），
     随项目一起分发，不再使用 pythonw 的默认图标。
     """
     here = os.path.dirname(os.path.abspath(__file__))

@@ -11,12 +11,12 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
-    QWidget,
 )
 
 from bundle import create_bundle
-from dark_messagebox import show_information, show_warning, show_critical, show_question
+from dark_messagebox import show_warning, show_critical, show_question
 from sortable_list import SortableListWidget
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
 
@@ -34,8 +34,8 @@ class CreatorWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("创建音乐相册")
-        self.setMinimumSize(620, 560)
-        fit_to_screen(self, 760, 660, 620, 560)
+        self.setMinimumSize(800, 680)
+        fit_to_screen(self, 960, 800, 800, 680)
         self.image_paths = []
         self.music_paths = []
         self._build_ui()
@@ -49,6 +49,8 @@ class CreatorWindow(QMainWindow):
 
         hint = QLabel("选择照片和音乐，打包成一个 .pmb 音乐相册文件（至少 1 张照片，音乐可选）。")
         hint.setObjectName("hint")
+        # 固定为单行提示，不让它吸收布局的剩余高度
+        hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         root.addWidget(hint)
 
         # 相册标题
@@ -74,7 +76,8 @@ class CreatorWindow(QMainWindow):
         self.image_list.setStyleSheet("""
             QListWidget {
                 min-width: 400px;
-                max-height: 120px;
+                min-height: 100px;
+                max-height: 150px;
                 font-size: 13px;
             }
             QListWidget::item {
@@ -88,6 +91,8 @@ class CreatorWindow(QMainWindow):
         """)
         self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.image_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # 图片列表悬停时右侧显示预览小窗（音乐列表不需要）
+        self.image_list.enable_hover_image_preview()
         root.addWidget(self.image_list, 3)
 
         img_footer = QHBoxLayout()
@@ -112,7 +117,8 @@ class CreatorWindow(QMainWindow):
         self.music_list.setStyleSheet("""
             QListWidget {
                 min-width: 400px;
-                max-height: 120px;
+                min-height: 100px;
+                max-height: 150px;
                 font-size: 13px;
             }
             QListWidget::item {
@@ -151,13 +157,14 @@ class CreatorWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "选择照片", "", IMAGE_FILTER)
         for f in files:
             self.image_paths.append(f)
-            self.image_list.add_item(f, os.path.basename(f))
+            # 同名文件自动追加 " (n)" 后缀，列表内不出现重名
+            self.image_list.add_item(f, self.image_list.unique_name(os.path.basename(f)))
 
     def _add_musics(self):
         files, _ = QFileDialog.getOpenFileNames(self, "选择音乐", "", MUSIC_FILTER)
         for f in files:
             self.music_paths.append(f)
-            self.music_list.add_item(f, os.path.basename(f))
+            self.music_list.add_item(f, self.music_list.unique_name(os.path.basename(f)))
 
     def _remove_selected(self, list_widget: QListWidget, paths: list):
         """移除选中的列表项，并同步删除对应路径。"""
@@ -170,6 +177,14 @@ class CreatorWindow(QMainWindow):
             if row < len(paths):
                 paths.pop(row)
         list_widget.refresh_numbers()
+
+    def reset(self):
+        """每次打开窗口前清空列表和输入框，保证全新状态。"""
+        self.image_paths.clear()
+        self.music_paths.clear()
+        self.title_edit.clear()
+        self.image_list.clear()
+        self.music_list.clear()
 
     # ---------- 保存 ----------
     def _save(self):
@@ -186,7 +201,22 @@ class CreatorWindow(QMainWindow):
         if not path.lower().endswith(".pmb"):
             path += ".pmb"
         try:
-            create_bundle(title, self.image_paths, self.music_paths, path)
+            image_names = [
+                self.image_list.item_name(self.image_list.item(i))
+                for i in range(self.image_list.count())
+            ]
+            music_names = [
+                self.music_list.item_name(self.music_list.item(i))
+                for i in range(self.music_list.count())
+            ]
+            create_bundle(
+                title,
+                self.image_paths,
+                self.music_paths,
+                path,
+                image_names=image_names,
+                music_names=music_names,
+            )
         except OSError as e:
             show_critical(self, "保存失败", f"保存时出错：\n{e}")
             return

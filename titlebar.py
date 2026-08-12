@@ -15,7 +15,7 @@
 import os
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -42,10 +42,9 @@ def sync_shadow_margins(window, maximized: bool):
         shell.layout().setContentsMargins(m, m, m, m + off)
 
 
-# 程序主图标（SVG 渲染生成的多尺寸 ICO），供窗口/任务栏/标题栏使用
+# 程序主图标（多尺寸 ICO），供窗口/任务栏/标题栏使用
 _ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 APP_ICON = os.path.join(_ICONS_DIR, "app_icon.ico")
-PMB_ICON = os.path.join(_ICONS_DIR, "pmb_icon.ico")
 
 
 def _icon_for_label(icon):

@@ -10,7 +10,7 @@ import wave
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter
 from PySide6.QtWidgets import QApplication
 
 from bundle import create_bundle
@@ -41,7 +41,7 @@ def make_landscape(path, w, h, colors, text, sub):
     assert img.save(path, "PNG"), path
 
 
-def make_melody(path, seconds, freq, label_note):
+def make_melody(path, seconds, freq):
     """生成一段正弦波 wav，作为示例音乐。"""
     rate = 44100
     n = int(rate * seconds)
@@ -67,12 +67,12 @@ def main():
     for path, colors, text, sub in imgs:
         make_landscape(path, 1280, 720, colors, text, sub)
     songs = [
-        (os.path.join(tmp, "风之诗.mp3"), 8, 440.0),
-        (os.path.join(tmp, "星之语.mp3"), 8, 554.37),
-        (os.path.join(tmp, "海之韵.mp3"), 8, 659.25),
+        (os.path.join(tmp, "风之诗.wav"), 8, 440.0),
+        (os.path.join(tmp, "星之语.wav"), 8, 554.37),
+        (os.path.join(tmp, "海之韵.wav"), 8, 659.25),
     ]
     for path, sec, freq in songs:
-        make_melody(path, sec, freq, "x")
+        make_melody(path, sec, freq)
     out = os.path.join(os.path.expanduser("~"), "Desktop", "示例音乐相册.pmb")
     create_bundle("示例音乐相册", [i[0] for i in imgs], [s[0] for s in songs], out)
     print("OK:", out)
