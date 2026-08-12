@@ -106,9 +106,12 @@ def extract_bundle(path: str, output_dir: str) -> str:
         folder = f"{folder} ({suffix})"
 
     img_dir = os.path.join(folder, "图片")
-    music_dir = os.path.join(folder, "音乐")
     os.makedirs(img_dir, exist_ok=True)
-    os.makedirs(music_dir, exist_ok=True)
+    # 只有打包了音乐才创建"音乐"文件夹
+    music_dir = None
+    if manifest.get("musics"):
+        music_dir = os.path.join(folder, "音乐")
+        os.makedirs(music_dir, exist_ok=True)
 
     with zipfile.ZipFile(path) as zf:
         for item in manifest.get("images", []):
@@ -120,19 +123,22 @@ def extract_bundle(path: str, output_dir: str) -> str:
             src = os.path.join(img_dir, stored)
             if os.path.normpath(src) != os.path.normpath(dst):
                 os.replace(src, dst)
-        for item in manifest.get("musics", []):
-            stored = item.get("path")
-            if not stored:
-                continue
-            zf.extract(stored, music_dir)
-            dst = os.path.join(music_dir, os.path.basename(item.get("name") or stored))
-            src = os.path.join(music_dir, stored)
-            if os.path.normpath(src) != os.path.normpath(dst):
-                os.replace(src, dst)
+        if music_dir:
+            for item in manifest.get("musics", []):
+                stored = item.get("path")
+                if not stored:
+                    continue
+                zf.extract(stored, music_dir)
+                dst = os.path.join(music_dir, os.path.basename(item.get("name") or stored))
+                src = os.path.join(music_dir, stored)
+                if os.path.normpath(src) != os.path.normpath(dst):
+                    os.replace(src, dst)
         zf.extract(MANIFEST_NAME, folder)
 
     # 清理解压后遗留的空目录（如 assets/）
     for base in (img_dir, music_dir):
+        if base is None:
+            continue
         for dirpath, _dirnames, filenames in os.walk(base, topdown=False):
             if not _dirnames and not filenames:
                 os.rmdir(dirpath)
@@ -166,9 +172,6 @@ class Bundle:
         if not self.images:
             self.close()
             raise BundleError("打包文件中没有图片")
-        if not self.musics:
-            self.close()
-            raise BundleError("打包文件中没有音乐")
 
     def asset_path(self, rel_path: str) -> str:
         """把包内相对路径映射到本地解压后的绝对路径。"""

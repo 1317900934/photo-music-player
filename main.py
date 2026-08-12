@@ -11,7 +11,7 @@
 import os
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 import file_assoc
 from bundle import Bundle, BundleError, extract_bundle
 from creator_window import CreatorWindow
+from dark_messagebox import show_information, show_warning, show_critical, show_question
 from player_window import PlayerWindow
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
 
@@ -64,6 +65,9 @@ QPushButton {
 }
 QPushButton:hover { background-color: #343946; }
 QPushButton:pressed { background-color: #22252d; }
+QPushButton:focus {
+    outline: none; background-color: #343946;
+}
 QPushButton:disabled {
     background-color: #22252d; color: #565b68; border-color: #2a2e37;
 }
@@ -71,27 +75,45 @@ QPushButton#primaryBtn {
     background-color: #5b7cfa; color: #ffffff; font-weight: 600; border: none;
 }
 QPushButton#primaryBtn:hover { background-color: #6d8bfb; }
+QPushButton#primaryBtn:focus {
+    outline: none; background-color: #6d8bfb;
+}
+QPushButton#primaryBtn:disabled {
+    background-color: #3a4150; color: #6a7180; font-weight: 600; border: none;
+}
 QPushButton#bigBtn {
     font-size: 15px; padding: 14px; background-color: #5b7cfa;
     color: #ffffff; font-weight: 600; border: none; border-radius: 10px;
 }
 QPushButton#bigBtn:hover { background-color: #6d8bfb; }
+QPushButton#bigBtn:focus {
+    outline: none; background-color: #6d8bfb;
+}
 QPushButton#bigBtnAlt {
     font-size: 15px; padding: 14px; background-color: #2a2e37;
     border: 1px solid #3c4252; border-radius: 10px;
 }
 QPushButton#bigBtnAlt:hover { background-color: #343946; }
+QPushButton#bigBtnAlt:focus {
+    outline: none; background-color: #343946;
+}
 QPushButton#assocBtn {
     background-color: transparent; border: none; color: #8b90a0;
     font-size: 12px; padding: 4px 8px;
 }
-QPushButton#assocBtn:hover { color: #cdd3e0; text-decoration: underline; }
+QPushButton#assocBtn:hover { color: #cdd3e0; }
+QPushButton#assocBtn:focus {
+    outline: none;
+}
 QToolButton#navBtn {
     background: rgba(255, 255, 255, 0.08); border: none; border-radius: 8px;
     font-size: 30px; color: #cdd3e0; padding: 4px 5px; min-width: 30px;
 }
 QToolButton#navBtn:hover { background: rgba(255, 255, 255, 0.16); }
 QToolButton#navBtn:pressed { background: rgba(255, 255, 255, 0.06); }
+QToolButton#navBtn:focus {
+    outline: none; background: rgba(255, 255, 255, 0.16);
+}
 QLineEdit {
     background-color: #22252d; border: 1px solid #3c4252; border-radius: 8px;
     padding: 8px 12px; color: #e6e8ee; font-size: 13px;
@@ -112,6 +134,11 @@ QSlider::handle:horizontal {
     background: #f2f4f8; border-radius: 7px;
 }
 QSlider::handle:horizontal:hover { background: #ffffff; }
+QSlider::groove:horizontal:disabled { background: #262a32; }
+QSlider::sub-page:horizontal:disabled { background: #262a32; }
+QSlider::add-page:horizontal:disabled { background: #262a32; }
+QSlider::handle:horizontal:disabled { background: #4a4f5c; }
+QSlider::handle:horizontal:disabled:hover { background: #4a4f5c; }
 QWidget#musicPanel { background-color: #1d2027; border-radius: 12px; }
 QLabel#volIcon { font-size: 15px; }
 QMenu {
@@ -121,7 +148,64 @@ QMenu {
 QMenu::item { padding: 7px 28px; border-radius: 5px; }
 QMenu::item:selected { background-color: #3a4a8f; }
 QMenu::item:checked { font-weight: 600; color: #8fb0ff; }
+
 """
+
+
+class _AlignedButton(QWidget):
+    """固定图标宽度的按钮：图标和文字各自独立控件，图标固定宽度保证对齐。"""
+    clicked = Signal()
+
+    def __init__(self, icon_char: str, text: str, variant: str = "alt", parent=None):
+        super().__init__(parent)
+        self._variant = variant
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+
+        self.setObjectName("alignedBtn")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(24, 0, 24, 0)
+        layout.setSpacing(6)
+        layout.addStretch()
+
+        # 图标：固定宽度 28px 居中
+        icon_color = "#ffffff" if variant == "primary" else "#cfd3dc"
+        self._icon_label = QLabel(icon_char)
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon_label.setFixedWidth(28)
+        self._icon_label.setStyleSheet(f"color: {icon_color}; font-size: 15px; background: transparent;")
+        layout.addWidget(self._icon_label)
+
+        # 文字
+        self._text_label = QLabel(text)
+        self._text_label.setStyleSheet("color: #e6e8ee; font-size: 15px; font-weight: 600; background: transparent;")
+        layout.addWidget(self._text_label)
+
+        layout.addStretch()
+
+        self._apply_style(variant)
+        self.setFixedHeight(52)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _apply_style(self, variant: str):
+        self._variant = variant
+        if variant == "primary":
+            self.setStyleSheet(
+                "#alignedBtn { background-color: #5b7cfa; border-radius: 10px; }"
+                "#alignedBtn:hover { background-color: #6d8bfb; }"
+                "#alignedBtn:pressed { background-color: #4a6ae0; }"
+            )
+        else:
+            self.setStyleSheet(
+                "#alignedBtn { background-color: #2a2e37; border: 1px solid #3c4252; border-radius: 10px; }"
+                "#alignedBtn:hover { background-color: #343946; }"
+                "#alignedBtn:pressed { background-color: #262a32; }"
+            )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -159,18 +243,15 @@ class MainWindow(QMainWindow):
 
         root.addSpacing(10)
 
-        create_btn = QPushButton("＋ 创建音乐相册")
-        create_btn.setObjectName("bigBtn")
+        create_btn = _AlignedButton("＋", "创建音乐相册", "primary")
         create_btn.clicked.connect(self._open_creator)
         root.addWidget(create_btn)
 
-        open_btn = QPushButton("▶ 打开音乐相册")
-        open_btn.setObjectName("bigBtnAlt")
+        open_btn = _AlignedButton("▶", "打开音乐相册")
         open_btn.clicked.connect(self._open_file)
         root.addWidget(open_btn)
 
-        extract_btn = QPushButton("✂ 拆解音乐相册")
-        extract_btn.setObjectName("bigBtnAlt")
+        extract_btn = _AlignedButton("✂", "拆解音乐相册")
         extract_btn.clicked.connect(self._extract_bundle)
         root.addWidget(extract_btn)
 
@@ -183,6 +264,7 @@ class MainWindow(QMainWindow):
         assoc_row.addStretch()
         assoc_btn = QPushButton("⚙ 设置 .pmb 文件关联")
         assoc_btn.setObjectName("assocBtn")
+        assoc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         assoc_btn.setToolTip("注册后双击 .pmb 音乐相册文件即可用本软件打开")
         assoc_btn.clicked.connect(self._register_assoc)
         assoc_row.addWidget(assoc_btn)
@@ -192,14 +274,14 @@ class MainWindow(QMainWindow):
     def _register_assoc(self):
         ok, info = file_assoc.register_association()
         if ok:
-            QMessageBox.information(
+            show_information(
                 self,
                 "文件关联已设置",
                 "已注册 .pmb 文件关联。\n\n现在双击任意 .pmb 音乐相册文件，"
                 "即可直接用本软件打开播放。",
             )
         else:
-            QMessageBox.warning(self, "设置失败", f"注册文件关联时出错：\n{info}")
+            show_warning(self, "设置失败", f"注册文件关联时出错：\n{info}")
 
     def _open_creator(self):
         if self.creator is None:
@@ -227,9 +309,9 @@ class MainWindow(QMainWindow):
         try:
             folder = extract_bundle(path, dest)
         except BundleError as e:
-            QMessageBox.warning(self, "拆解失败", str(e))
+            show_warning(self, "拆解失败", str(e))
             return
-        QMessageBox.information(
+        show_information(
             self, "拆解完成", f"已还原到：\n{folder}"
         )
 
@@ -237,7 +319,7 @@ class MainWindow(QMainWindow):
         try:
             bundle = Bundle(path)
         except BundleError as e:
-            QMessageBox.warning(self, "无法打开", str(e))
+            show_warning(self, "无法打开", str(e))
             return
         self._open_player(bundle)
 
@@ -271,7 +353,7 @@ def main():
         try:
             bundle = Bundle(sys.argv[1])
         except BundleError as e:
-            QMessageBox.warning(None, "无法打开", str(e))
+            show_warning(None, "无法打开", str(e))
             return 1
         PlayerWindow(bundle).show()
         return app.exec()

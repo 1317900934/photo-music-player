@@ -9,14 +9,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from bundle import create_bundle
+from dark_messagebox import show_information, show_warning, show_critical, show_question
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
 
 IMAGE_FILTER = "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp *.gif);;所有文件 (*.*)"
@@ -46,7 +47,7 @@ class CreatorWindow(QMainWindow):
         root.setSpacing(10)
         inner.addLayout(root, 1)
 
-        hint = QLabel("选择照片和音乐，打包成一个 .pmb 音乐相册文件（至少 1 张照片、1 首音乐）。")
+        hint = QLabel("选择照片和音乐，打包成一个 .pmb 音乐相册文件（至少 1 张照片，音乐可选）。")
         hint.setObjectName("hint")
         root.addWidget(hint)
 
@@ -69,6 +70,19 @@ class CreatorWindow(QMainWindow):
 
         self.image_list = QListWidget()
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.image_list.setStyleSheet("""
+            QListWidget {
+                min-width: 400px;
+                max-height: 120px;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                height: 24px;
+                padding: 2px;
+            }
+        """)
+        self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         root.addWidget(self.image_list, 3)
 
         img_footer = QHBoxLayout()
@@ -89,6 +103,19 @@ class CreatorWindow(QMainWindow):
 
         self.music_list = QListWidget()
         self.music_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.music_list.setStyleSheet("""
+            QListWidget {
+                min-width: 400px;
+                max-height: 120px;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                height: 24px;
+                padding: 2px;
+            }
+        """)
+        self.music_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.music_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         root.addWidget(self.music_list, 2)
 
         music_footer = QHBoxLayout()
@@ -110,13 +137,17 @@ class CreatorWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "选择照片", "", IMAGE_FILTER)
         for f in files:
             self.image_paths.append(f)
-            self.image_list.addItem(os.path.basename(f))
+            item = QListWidgetItem(os.path.basename(f))
+            item.setToolTip(os.path.basename(f))
+            self.image_list.addItem(item)
 
     def _add_musics(self):
         files, _ = QFileDialog.getOpenFileNames(self, "选择音乐", "", MUSIC_FILTER)
         for f in files:
             self.music_paths.append(f)
-            self.music_list.addItem(os.path.basename(f))
+            item = QListWidgetItem(os.path.basename(f))
+            item.setToolTip(os.path.basename(f))
+            self.music_list.addItem(item)
 
     def _remove_selected(self, list_widget: QListWidget, paths: list):
         """移除选中的列表项，并同步删除对应路径。"""
@@ -132,10 +163,7 @@ class CreatorWindow(QMainWindow):
     # ---------- 保存 ----------
     def _save(self):
         if not self.image_paths:
-            QMessageBox.warning(self, "提示", "请至少添加一张照片。")
-            return
-        if not self.music_paths:
-            QMessageBox.warning(self, "提示", "请至少添加一首音乐。")
+            show_warning(self, "提示", "请至少添加一张照片。")
             return
         title = self.title_edit.text().strip() or "未命名相册"
         default_name = f"{title}.pmb"
@@ -149,16 +177,14 @@ class CreatorWindow(QMainWindow):
         try:
             create_bundle(title, self.image_paths, self.music_paths, path)
         except OSError as e:
-            QMessageBox.critical(self, "保存失败", f"保存时出错：\n{e}")
+            show_critical(self, "保存失败", f"保存时出错：\n{e}")
             return
-        ret = QMessageBox.question(
+        ret = show_question(
             self,
             "保存成功",
-            f"音乐相册已保存到：\n{path}\n\n是否立即打开播放？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            f"音乐相册已保存到：\n{path}\n\n是否立即打开？",
         )
-        if ret == QMessageBox.StandardButton.Yes:
+        if ret:
             self.saved.emit(path)
             self.close()
         else:
