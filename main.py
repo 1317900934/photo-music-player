@@ -55,6 +55,7 @@ QPushButton#tbClose:pressed { background: #c93a3f; }
 QLabel#logo { font-size: 46px; color: #5b7cfa; }
 QLabel#h1 { font-size: 26px; font-weight: 600; color: #f2f4f8; }
 QLabel#hint { color: #8b90a0; font-size: 12px; }
+QLabel#versionLabel { color: #565b68; font-size: 11px; }
 QLabel#windowTitle { font-size: 16px; font-weight: 600; color: #f2f4f8; }
 QLabel#songTitle { font-size: 14px; font-weight: 500; color: #dfe3ec; }
 QLabel#indexLabel { color: #8b90a0; font-size: 12px; }
@@ -276,6 +277,12 @@ class MainWindow(QMainWindow):
         assoc_row.addWidget(assoc_btn)
         assoc_row.addStretch()
         root.addLayout(assoc_row)
+
+        # 右下角版本号小字（不显眼）
+        version_label = QLabel("v1.2.2")
+        version_label.setObjectName("versionLabel")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        root.addWidget(version_label)
 
     def _register_assoc(self):
         ok, info = file_assoc.register_association()

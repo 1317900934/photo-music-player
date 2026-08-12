@@ -91,12 +91,28 @@ class GalleryImageLabel(QLabel):
     """主界面图片显示控件：使用 QPainter 直接绘制，确保图片清晰。
     
     与 _ViewerImageLabel 类似，但更简单，只负责显示图片，不支持缩放/拖动。
+    鼠标悬停在图片上滚动滚轮可切换图片（向上=上一张，向下=下一张）。
     """
+    
+    prevRequested = Signal()  # 滚轮向上
+    nextRequested = Signal()  # 滚轮向下
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._pixmap = None
+    
+    def wheelEvent(self, event):
+        """鼠标在图片上滚动滚轮：向上滚=上一张，向下滚=下一张。"""
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
+        if delta > 0:
+            self.prevRequested.emit()
+        else:
+            self.nextRequested.emit()
+        event.accept()
     
     def setPixmap(self, pixmap):
         """设置要显示的图片。"""
@@ -1038,6 +1054,10 @@ class PlayerWindow(QMainWindow):
         self.image_index = 0
         self.music_index = 0
         self.play_mode = PLAY_MODES[0]  # 默认顺序播放
+        # 播放模式持久化：延续上次打开时选择的模式（与音量条一致）
+        saved_mode = self._settings().value("play_mode", PLAY_MODES[0], type=str)
+        if saved_mode in PLAY_MODES:
+            self.play_mode = saved_mode
         self._pending = []  # 随机播放的未播池（歌曲索引）
         self._origin_pixmap = None
         self._seeking = False
@@ -1072,6 +1092,9 @@ class PlayerWindow(QMainWindow):
         )
         # 设置图片标签支持点击事件
         self.image_label.mousePressEvent = self._on_image_click
+        # 鼠标悬停在图片上滚动滚轮：向上=上一张，向下=下一张（与左右按钮一致）
+        self.image_label.prevRequested.connect(lambda: self._show_image(self.image_index - 1))
+        self.image_label.nextRequested.connect(lambda: self._show_image(self.image_index + 1))
 
         self.prev_btn = QToolButton()
         self.prev_btn.setObjectName("navBtn")
@@ -1240,6 +1263,8 @@ class PlayerWindow(QMainWindow):
         idx = PLAY_MODES.index(self.play_mode)
         self.play_mode = PLAY_MODES[(idx + 1) % len(PLAY_MODES)]
         self._update_mode_button()
+        # 记住播放模式（QSettings 析构时自动落盘），下次打开延续该模式
+        self._settings().setValue("play_mode", self.play_mode)
         if self.play_mode == "随机播放":
             self._reset_pending()
 

@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QPushButton,
     QVBoxLayout,
@@ -24,6 +23,7 @@ from bundle import Bundle, BundleError, create_bundle, is_bundle, MANIFEST_NAME,
 from dark_messagebox import (
     DarkMessageBox, DarkInputDialog, show_information, show_warning, show_critical, show_question,
 )
+from sortable_list import SortableListWidget
 from titlebar import APP_ICON, apply_frameless, fit_to_screen
 
 IMAGE_FILTER = "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp *.gif);;所有文件 (*.*)"
@@ -83,7 +83,7 @@ class EditorWindow(QMainWindow):
         img_header.addWidget(add_img)
         root.addLayout(img_header)
 
-        self.image_list = QListWidget()
+        self.image_list = SortableListWidget(self.image_paths)
         self.image_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.image_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.image_list.setStyleSheet("""
@@ -124,7 +124,7 @@ class EditorWindow(QMainWindow):
         music_header.addWidget(add_music)
         root.addLayout(music_header)
 
-        self.music_list = QListWidget()
+        self.music_list = SortableListWidget(self.music_paths)
         self.music_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.music_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.music_list.setStyleSheet("""
@@ -186,26 +186,22 @@ class EditorWindow(QMainWindow):
         
         # 加载图片
         self.image_list.clear()
-        self.image_paths = []
+        self.image_paths.clear()
         for img in bundle.images:
             # 图片在解压后的临时目录中
             rel_path = img["path"]  # 例如 "assets/000_xxx.jpg"
             abs_path = os.path.join(self.temp_dir, rel_path)
             self.image_paths.append(abs_path)
-            item = QListWidgetItem(img["name"])
-            item.setToolTip(abs_path)
-            self.image_list.addItem(item)
+            self.image_list.add_item(abs_path, img["name"])
         
         # 加载音乐
         self.music_list.clear()
-        self.music_paths = []
+        self.music_paths.clear()
         for music in bundle.musics:
             rel_path = music["path"]
             abs_path = os.path.join(self.temp_dir, rel_path)
             self.music_paths.append(abs_path)
-            item = QListWidgetItem(music["name"])
-            item.setToolTip(abs_path)
-            self.music_list.addItem(item)
+            self.music_list.add_item(abs_path, music["name"])
         
         # 不要关闭 bundle，因为我们需要临时目录中的文件
         # 但我们需要防止 bundle 在关闭时删除临时目录
@@ -220,17 +216,13 @@ class EditorWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "选择照片", "", IMAGE_FILTER)
         for f in files:
             self.image_paths.append(f)
-            item = QListWidgetItem(os.path.basename(f))
-            item.setToolTip(f)
-            self.image_list.addItem(item)
+            self.image_list.add_item(f, os.path.basename(f))
 
     def _add_musics(self):
         files, _ = QFileDialog.getOpenFileNames(self, "选择音乐", "", MUSIC_FILTER)
         for f in files:
             self.music_paths.append(f)
-            item = QListWidgetItem(os.path.basename(f))
-            item.setToolTip(f)
-            self.music_list.addItem(item)
+            self.music_list.add_item(f, os.path.basename(f))
 
     def _remove_selected(self, list_widget: QListWidget, paths: list, file_type: str):
         """移除选中的列表项，并同步删除对应路径。"""
@@ -248,6 +240,7 @@ class EditorWindow(QMainWindow):
                         os.remove(removed_path)
                     except OSError:
                         pass
+        list_widget.refresh_numbers()
 
     def _rename_selected(self, list_widget: QListWidget, paths: list, file_type: str):
         """重命名选中的列表项。"""
@@ -255,16 +248,18 @@ class EditorWindow(QMainWindow):
         if not items:
             show_warning(self, "提示", "请先选择要重命名的项目。")
             return
+        if len(items) > 1:
+            # 多选时不弹重命名窗口，提示选择单个项目
+            dlg = DarkMessageBox(self, "提示", "请选择单个项目重命名。", "info", [("知道了", "accept")])
+            dlg.exec()
+            return
         
         item = items[0]
         row = list_widget.row(item)
-        old_name = item.text()
+        old_name = list_widget.item_name(item)
         
         new_name, ok = show_input_dialog(self, "重命名", "输入新名称：", old_name)
         if ok and new_name and new_name != old_name:
-            item.setText(new_name)
-            item.setToolTip(new_name)
-            # 更新路径列表中的名称
             if row < len(paths):
                 old_path = paths[row]
                 # 如果文件在临时目录中，重命名文件
@@ -274,11 +269,12 @@ class EditorWindow(QMainWindow):
                     try:
                         os.rename(old_path, new_path)
                         paths[row] = new_path
+                        item.setData(Qt.ItemDataRole.UserRole, new_path)
                     except OSError as e:
                         show_warning(self, "重命名失败", f"无法重命名文件：\n{e}")
-                else:
-                    # 外部文件，只更新显示名称（不移动物理文件）
-                    pass
+                        return
+                # 外部文件，只更新显示名称（不移动物理文件）
+            list_widget.update_item_name(item, new_name)
 
     # ---------- 保存 ----------
     def _save(self):
